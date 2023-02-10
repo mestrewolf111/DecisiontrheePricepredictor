@@ -1,0 +1,352 @@
+import warnings
+import datetime
+warnings.filterwarnings('ignore')
+import pickle
+import os
+from iqoptionapi.stable_api import IQ_Option
+iq = IQ_Option(f"", "")
+iq.connect()  # connect to iqoption
+#iq.get_all_init()
+import csv
+import os
+import pygame
+import tensorflow as tf
+import pandas as pd
+import numpy as np
+import datetime
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+import time
+pygame.init()
+pygame.mixer.music.load('inicio.mp3')
+pygame.mixer.music.play()
+# definindo a variavel par
+par = 'EURGBP'
+bet_money = 100
+# definindo o time frame de 1m
+time_frame = 30
+nrtentativas = 0
+# definindo um sleep de 60s
+csv_file = 'dados.csv'
+sleep_time = 62
+trade = True
+treinar = True
+# Importando as bibliotecas necessárias
+temporizer = datetime.datetime.now().second
+ganhos_compra = []
+ganhos_venda = []
+trade = False
+
+
+def supresist(iq,par):
+    j = 1
+    velas = iq.get_candles(par, 60, 10, time.time())
+    resistencia = (velas[j]["max"] < velas[j - 1]['max']
+                   and velas[j]['max'] < velas[j + 1]['max']
+                   and velas[j + 1]['max'] < velas[j + 2]['max']
+                   )
+
+    support = (velas[j]["min"] > velas[j - 1]['min']
+               and velas[j]['min'] > velas[j + 1]['min']
+               and velas[j + 1]['min'] > velas[j + 2]['min']
+               )
+    porcentagem = 0.0
+    if resistencia == True:
+        porcentagem = 1.0
+    elif support == True:
+        porcentagem = 1.0
+    else:
+        porcentagem = 0.0
+    return porcentagem
+
+
+def adx(par, iq, time_frame, time, n=14):
+    velas = iq.get_candles(par, time_frame, 1000, time.time())
+    data = pd.DataFrame(velas)
+    X = data[["open", "close", "min", "max", "volume"]]
+    data['high_to_low'] = data['max'].sub(data['min'], axis=0)
+    data['high_to_close'] = abs(data['max'].sub(data['close'].shift(1), axis=0))
+    data['low_to_close'] = abs(data['min'].sub(data['close'].shift(1), axis=0))
+    data['TR'] = data[['high_to_low', 'high_to_close', 'low_to_close']].max(axis=1)
+    # Calculate the Average Directional Index (ADX)
+    data['ADX'] = data['TR'] * 10000
+    return data['ADX']
+
+
+def rsi(par,iq, time_frame):
+    ma_period = 14
+    velas = iq.get_candles(par, time_frame, 1000, time.time())
+    data = pd.DataFrame(velas)
+    X = data[["open", "close", "min", "max", "volume"]]
+    data['delta'] = data['close'] - data['open']
+    data['up'] = np.where(data['delta'] > 0, data['delta'], 0)
+    data['down'] = np.where(data['delta'] < 0, abs(data['delta']), 0)
+
+    avg_up_period = data['up'].rolling(window=ma_period).mean()
+    avg_down_period = data['down'].rolling(window=ma_period).mean()
+
+    rs = avg_up_period / avg_down_period
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi.iloc[-1]/100
+def macd(par, iq, time_frame):
+    ema_short = 12
+    ema_long = 26
+    signal = 9
+    velas = iq.get_candles(par, time_frame, 1000, time.time())
+    data = pd.DataFrame(velas)
+    X = data[["open", "close", "min", "max", "volume"]]
+    ema_short_data = X.ewm(span=ema_short).mean()
+    ema_long_data = X.ewm(span=ema_long).mean()
+    macd = ema_short_data - ema_long_data
+    signal_data = macd.ewm(span=signal).mean()
+    histogram = macd - signal_data
+    # Normalizando o histograma para o intervalo 0-100
+    min_value = histogram['close'].min()
+    max_value = histogram['close'].max()
+    histogram['close'] = histogram['close'].apply(lambda x: (x - min_value) / (max_value - min_value))
+    return histogram['close']
+
+def treinar():
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import MinMaxScaler
+    from sklearn.metrics import accuracy_score
+    dados = pd.read_csv("dados.csv")
+    X = dados[["open", "close", "min", "max", "TREND", "BB_upper", "BB_lower", "ADX", "RSI", "MACD","SALDO","Previsão"]]
+    # Preparando os dados para treinamento
+    # Normalizando os dados
+    model = DecisionTreeClassifier()
+    scaler = MinMaxScaler()
+    X = scaler.fit_transform(X)
+    # Criando um dataframe com as colunas de dados normalizados
+    df = pd.DataFrame(X, columns=["open", "close", "min", "max", "TREND", "BB_upper",
+                                  "BB_lower", "ADX", "RSI", "MACD","SALDO","Previsão"])
+    # Criando a coluna de labels com os valores de RED (1), GREEN (2) e DOJI (3)
+    df['label'] = np.where(dados['close'].shift(-1) > dados['BB_upper'] , 1,
+                           np.where(dados['close'].shift(-1) < dados['BB_lower'], 2, 3))
+    df.isna().sum()
+    df = df.fillna(0)
+    # Separando os dados em variáveis X e y
+    # Dividindo os dados em conjuntos de treino e teste
+    X_train, X_test, y_train, y_test = train_test_split(df.drop('label', axis=1), df['label'], test_size=0.2,
+                                                        random_state=42)
+
+    model.fit(X_train, y_train)
+    # Realizando previsões com o conjunto de testes
+    y_pred = model.predict(X_test)
+    # Avaliando o desempenho do modelo
+    print('MAE score: {:.2f}'.format(mean_absolute_error(y_test, y_pred)))
+    print('MSE score: {:.2f}'.format(mean_squared_error(y_test, y_pred)))
+    # Realizando previsões com o conjunto de testes
+    y_pred_next = model.predict(X_test)
+    X_train, X_test, y_train, y_test = train_test_split(df.drop('label', axis=1), df['label'], test_size=0.2,
+                                                       random_state=42)
+    # Calculando acurácia
+    accuracy = accuracy_score(y_test, y_pred)
+    print("Acurácia do Modelo =>", accuracy)
+    return accuracy
+
+def checktempo():
+    while True:
+        time.sleep(1)
+        if  datetime.datetime.now().second == 2:
+            break
+
+
+
+
+
+def decicionthree(par,iq,time_frame):
+    from sklearn.linear_model import LinearRegression
+    from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import MinMaxScaler
+    from sklearn.tree import DecisionTreeClassifier
+    from sklearn.metrics import accuracy_score
+    from sklearn.feature_selection import RFE
+    saldo = iq.get_balance()
+    velas = iq.get_candles(par, time_frame, 500, time.time())
+    data = pd.DataFrame(velas)
+    X = data[["open", "close", "min", "max", "volume"]]
+    # Adicionando indicadores técnicos
+    data['Previsão'] = -1
+    data['SMA9'] = data['close'].ewm(span=9, adjust=False).mean()
+    data['SMA21'] = data['close'].ewm(span=21, adjust=False).mean()
+    data['TREND'] = np.where(data['SMA21'] > data['SMA9'], 1,0)
+    data['BB_upper'] = data['max'].ewm(span=10, adjust=False).mean()
+    data['BB_lower'] = data['min'].ewm(span=10, adjust=False).mean()
+   # print(data['BB_upper'])
+   # print(data['BB_lower'])
+    data['ADX'] = adx(par,iq,time_frame,time, n=14)
+    data['RSI'] = rsi(par, iq, time_frame)
+    data['MACD'] = macd(par, iq, time_frame)
+    data['SALDO'] = saldo
+    # Carregando os dados de treinamento do arquivo CSV
+
+    df_csv = pd.read_csv('dados.csv')
+    # Adicionando os dados de treinamento ao conjunto de dados
+    data = data.append(df_csv)
+    X = data[["open", "close", "min", "max", "TREND", "BB_upper", "BB_lower", "ADX", "RSI", "MACD","SALDO","Previsão"]]
+    # Preparando os dados para treinamento
+    # Normalizando os dados
+
+    model = DecisionTreeClassifier()
+    scaler = MinMaxScaler()
+    X = scaler.fit_transform(X)
+    # Criando um dataframe com as colunas de dados normalizados
+    df = pd.DataFrame(X, columns=["open", "close", "min", "max", "TREND", "BB_upper",
+                                  "BB_lower", "ADX", "RSI", "MACD","SALDO","Previsão"])
+    # Criando a coluna de labels com os valores de RED (1), GREEN (2) e DOJI (3)
+    df['label'] = np.where(data['close'].shift(-1) > data['close'], 1,
+                           np.where(data['close'].shift(-1) < data['close'], 2, 3))
+    df.isna().sum()
+    df = df.fillna(0)
+    # Separando os dados em variáveis X e y
+    # Dividindo os dados em conjuntos de treino e teste
+    X_train, X_test, y_train, y_test = train_test_split(df.drop('label', axis=1), df['label'], test_size=0.2,
+                                                        random_state=42)
+    selector = RFE(model, n_features_to_select=1).fit(X_train, y_train)
+    model.fit(X_train, y_train)
+    # Realizando previsões com o conjunto de testes
+    y_pred = model.predict(X_test)
+  #  print(y_pred)
+    # Realizando previsões com o conjunto de testes
+    y_pred_next = model.predict(X_test)
+    pickle.dump(model, open('modelxx.pkl', 'wb'))
+  #  print(y_pred)
+
+    df = pd.DataFrame(X, columns=["open", "close", "min", "max", "TREND", "BB_upper",
+                                  "BB_lower", "ADX", "RSI", "MACD","SALDO","Previsão"])
+    # Criando a coluna de labels com os valores de RED (1), GREEN (2) e DOJI (3)
+    df['label'] = np.where(data['close'].shift(-1) > data['close'], 1,
+                           np.where(data['close'].shift(-1) <data['close'], 2, 3))
+    df.isna().sum()
+    df = df.fillna(0)
+    X_train, X_test, y_train, y_test = train_test_split(df.drop('label', axis=1), df['label'], test_size=0.2,
+                                                        random_state=42)
+    model = pickle.load(open('modelxx.pkl', 'rb'))
+    y_pred_next = model.predict(X_test)
+    print('MAE score: {:.2f}'.format(mean_absolute_error(y_test, y_pred)))
+    print('MSE score: {:.2f}'.format(mean_squared_error(y_test, y_pred)))
+    accuracy = accuracy_score(y_test, y_pred_next)
+  #  print(y_pred_next)
+    print("Acurácia do Modelo =>", accuracy)
+    print("DecisionTree =>Real", y_pred_next[1])
+
+    df = pd.DataFrame(data)
+  #if accuracy >= 0.65:
+  #    y_pred_next[0] = 3
+  #if y_pred_next[0] == 1:
+  #    y_pred_next[0] = 2
+  #elif y_pred_next[0] == 1:
+  #    y_pred_next[0] = 2
+  #else:
+  #    y_pred_next[0] = 3
+    df['Previsão'] = y_pred_next[1]
+    print(y_pred_next)
+    print("DecisionTree =>False", y_pred_next[1])
+    df = df[["open", "close", "min", "max", "TREND", "BB_upper", "BB_lower", "ADX", "RSI", "MACD","SALDO","Previsão"]]
+    return y_pred_next[1],df
+
+galo = 0
+wins = 0
+loss = 0
+profit = 0
+stop_win = 40
+stop_loss = 5
+while True:
+    model = pickle.load(open('modelxx.pkl', 'rb'))
+    if galo == 0:
+      while datetime.datetime.now().second != 20:
+              xd = "xd"
+    y_pred_next = decicionthree(par, iq, time_frame)
+    data = y_pred_next[1].head(1)
+    data.columns = ["open", "close", "min", "max", "TREND", "BB_upper",
+                    "BB_lower", "ADX", "RSI", "MACD", "SALDO", "Previsão"]
+    data = pd.DataFrame(data)
+    blablabla = iq.get_balance()
+    if y_pred_next[0] == 2:
+        if galo == 0:
+            while datetime.datetime.now().second != 58:
+                xd = "xd"
+        print('Previsão para a próxima vela: Compra')
+        check, id = iq.buy(bet_money, par, "call", 1)
+        trade = True
+        print(datetime.datetime.now().second)
+        print("start check win please wait")
+        time.sleep(5)
+        checktempo()
+    elif y_pred_next[0] == 1:
+        if galo == 0:
+            while datetime.datetime.now().second != 58:
+                xd = "xd"
+        check, id = iq.buy(bet_money, par, "put", 1)
+        print('Previsão para a próxima vela: Venda')
+        trade = True
+        print("start check win please wait")
+        time.sleep(5)
+        checktempo()
+    if trade:
+        betsies = iq.get_balance()
+        vaisefude = betsies - blablabla
+        print(vaisefude)
+        trade = False
+        pickle.dump(model, open('modelxx.pkl', 'wb'))
+        if vaisefude > 2:
+            print("WIN")
+            wins += 1
+            profit += vaisefude
+            galo = 0
+            pygame.mixer.music.load('ganhou.mp3')
+            pygame.mixer.music.play()
+            bet_money = 100
+            if y_pred_next[0] == 2:
+                treinar = True
+                ganhos_compra.append(vaisefude)
+            elif y_pred_next[0] == 1:
+                treinar = True
+                ganhos_venda.append(vaisefude)
+            bet_money = 100
+            nrtentativas += 1
+            data['SALDO'] = iq.get_balance()
+           # with open(csv_file, 'a') as f:
+           #     data.to_csv(f, header=False)
+           #     time.sleep(30)
+
+
+        else:
+            galo += 1
+            print('GALE =>', galo)
+            pygame.mixer.music.load('gale.mp3')
+            pygame.mixer.music.play()
+            if galo == 1:
+                bet_money = 100 * 2.55
+                profit +=  vaisefude
+            elif galo == 2:
+                bet_money = 100 * 4.55
+                profit +=  vaisefude
+            elif galo > 2:
+                galo = 0
+                loss += 1
+                pygame.mixer.music.load('perdeu.mp3')
+                time.sleep(30)
+                pygame.mixer.music.play()
+                profit +=  vaisefude
+                print("loss")
+                nrtentativas = 0
+                treinar = True
+                galo = 0
+                bet_money = 100
+        print("PLACAR", "WINS:", wins, "x", loss, "LOSS:")
+        print("LUCRO::", profit)
+        if wins > stop_win:
+            print("Stop GAIN batido")
+            exit()
+        elif loss >= stop_loss:
+            print("Stop LOSS batido")
+            exit()
+
+
